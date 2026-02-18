@@ -11,6 +11,7 @@ All generators follow anti-noise output rules:
 """
 
 import logging
+import os
 from typing import Dict, Any
 from datetime import datetime
 import asyncio
@@ -20,6 +21,16 @@ from .file_loader import load_multiple_files, FileLoaderError
 from .slush_api import fetch_slush_data_for_memo, SlushAPIError
 
 logger = logging.getLogger(__name__)
+
+def load_system_docs() -> str:
+    """Load system documentation for context"""
+    try:
+        system_docs_path = os.path.join(os.path.dirname(__file__), "..", "system_docs.md")
+        with open(system_docs_path, 'r', encoding='utf-8') as f:
+            return f.read()
+    except Exception as e:
+        logger.warning(f"Failed to load system docs: {str(e)}")
+        return "System documentation not available."
 
 def generate_lead_list(params: Dict[str, Any]) -> str:
     """
@@ -48,6 +59,7 @@ def generate_prompt_pack(params: Dict[str, Any]) -> str:
     feature_name = params.get("feature_name", "Unnamed Feature")
     feature_description = params.get("feature_description", "No description provided")
     notes = params.get("notes", "")
+    source_context = params.get("source_context", "")
     
     # Load optional files
     file_refs = {k: v for k, v in params.items() if k.endswith("_key") and v}
@@ -55,6 +67,9 @@ def generate_prompt_pack(params: Dict[str, Any]) -> str:
     
     # Build system prompt
     system_prompt = """You are a senior technical architect creating implementation planning documents. 
+
+When source_context is provided, focus on turning suggestions/experiments from memos or research into concrete prompts for a coding agent.
+When no source_context, focus on feature implementation planning.
 
 Your output must follow this exact structure:
 
@@ -114,15 +129,24 @@ CRITICAL: Follow anti-noise rules:
 - Max 5 acceptance criteria
 - Be specific and actionable"""
     
-    # Build user prompt
-    inputs_list = [f"Feature: {feature_name}", f"Description: {feature_description}"]
-    if notes:
-        inputs_list.append(f"Additional notes: {notes}")
+    # Build user prompt - prioritize source_context
+    inputs_list = [f"Feature: {feature_name}"]
     
-    user_prompt = f"Create an implementation plan for: {feature_name}\n\nDescription: {feature_description}\n"
-    
-    if notes:
-        user_prompt += f"\nAdditional Context: {notes}\n"
+    if source_context:
+        inputs_list.append("Source context from memo/research")
+        user_prompt = f"Turn the following memo/research suggestions into concrete prompts for: {feature_name}\n\n"
+        user_prompt += f"## Source Context (Memo/Research Output):\n{source_context}\n\n"
+        user_prompt += f"Feature Description: {feature_description}\n"
+        if notes:
+            inputs_list.append(f"Additional notes: {notes}")
+            user_prompt += f"\nAdditional Context: {notes}\n"
+    else:
+        inputs_list.append(f"Description: {feature_description}")
+        if notes:
+            inputs_list.append(f"Additional notes: {notes}")
+        user_prompt = f"Create an implementation plan for: {feature_name}\n\nDescription: {feature_description}\n"
+        if notes:
+            user_prompt += f"\nAdditional Context: {notes}\n"
     
     # Add file contents if available
     if loaded_files:
@@ -162,6 +186,9 @@ async def generate_weekly_pilot_memo(params: Dict[str, Any]) -> str:
     # Load optional files
     file_refs = {k: v for k, v in params.items() if k.endswith("_key") and v}
     loaded_files = load_multiple_files(file_refs)
+    
+    # Load system documentation
+    system_docs = load_system_docs()
     
     # Fetch real Slush business data
     try:
@@ -237,7 +264,7 @@ CRITICAL: Follow anti-noise rules:
 - Max 3 questions"""
     
     # Build user prompt
-    inputs_list = [f"Pilot: {pilot_name}", f"Week of: {week_start_date}", "Real Slush business data"]
+    inputs_list = [f"Pilot: {pilot_name}", f"Week of: {week_start_date}", "Real Slush business data", "System documentation"]
     if notes:
         inputs_list.append(f"Context notes: {notes}")
     
@@ -245,6 +272,9 @@ CRITICAL: Follow anti-noise rules:
     
     if notes:
         user_prompt += f"\nAdditional Context: {notes}\n"
+    
+    # Add system documentation for context
+    user_prompt += f"\n## System Documentation:\n{system_docs}\n"
     
     # Add real Slush business data
     user_prompt += f"\n## Real Business Data from Slush API:\n{slush_data}\n"
@@ -290,6 +320,9 @@ def generate_research_brief(params: Dict[str, Any]) -> str:
     # Load optional files
     file_refs = {k: v for k, v in params.items() if k.endswith("_key") and v}
     loaded_files = load_multiple_files(file_refs)
+    
+    # Load system documentation
+    system_docs = load_system_docs()
     
     # Build system prompt
     system_prompt = """You are a senior research analyst creating comprehensive research briefs.
@@ -361,11 +394,14 @@ CRITICAL: Follow anti-noise rules:
 - Be specific and evidence-based"""
     
     # Build user prompt
-    inputs_list = [f"Topic: {topic}"]
+    inputs_list = [f"Topic: {topic}", "System documentation"]
     if context_notes:
         inputs_list.append(f"Context notes: {context_notes}")
     
     user_prompt = f"Research analysis for: {topic}\n\n"
+    
+    # Add system documentation for context
+    user_prompt += f"## System Documentation:\n{system_docs}\n\n"
     
     if questions:
         user_prompt += "Research Questions:\n"

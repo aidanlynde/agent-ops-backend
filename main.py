@@ -17,6 +17,7 @@ import asyncio
 from db import get_db_session, init_db
 from models import Job, Output, JobStatus, JobType
 from services.generators import generate_lead_list, generate_prompt_pack, generate_weekly_pilot_memo, generate_research_brief
+from services.llm import generate, LLMError
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -84,6 +85,12 @@ class OutputResponse(BaseModel):
     content_text: str
     content_type: str
     created_at: datetime
+
+class ChatRequest(BaseModel):
+    message: str
+
+class ChatResponse(BaseModel):
+    reply: str
 
 
 # Health check endpoint (no auth required)
@@ -270,6 +277,48 @@ async def get_latest_output(type: str):
             content_type=output.content_type,
             created_at=output.created_at
         )
+    
+    finally:
+        db.close()
+
+# Chat with job output endpoint
+@app.post("/jobs/{job_id}/chat", response_model=ChatResponse, dependencies=[Depends(verify_api_key)])
+async def chat_with_job(job_id: str, request: ChatRequest):
+    db = next(get_db_session())
+    
+    try:
+        # Get the job and its output
+        job = db.query(Job).filter(Job.id == job_id).first()
+        if not job:
+            raise HTTPException(status_code=404, detail="Job not found")
+        
+        output = db.query(Output).filter(Output.job_id == job_id).first()
+        if not output:
+            raise HTTPException(status_code=404, detail="Job output not found")
+        
+        # Build context from original job and output
+        job_params = json.loads(job.params_json)
+        
+        system_prompt = f"""You are continuing a conversation about a {job.type} that was previously generated. 
+        
+The user is asking a follow-up question about this output. Provide a helpful response based on the context.
+
+Original Job Type: {job.type}
+Original Parameters: {json.dumps(job_params, indent=2)}
+Generated Output: {output.content_text[:2000]}{'...' if len(output.content_text) > 2000 else ''}"""
+
+        user_prompt = f"Follow-up question: {request.message}"
+        
+        # Generate response
+        reply = generate(system_prompt, user_prompt)
+        
+        return ChatResponse(reply=reply)
+        
+    except LLMError as e:
+        raise HTTPException(status_code=500, detail=f"Error generating response: {str(e)}")
+    except Exception as e:
+        logger.error(f"Error in chat endpoint: {str(e)}")
+        raise HTTPException(status_code=500, detail="Internal server error")
     
     finally:
         db.close()
